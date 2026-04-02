@@ -473,7 +473,6 @@
 <body>
 
   <!-- ── UI STRUCTURE ── -->
-
   <header>
     <div class="logo">SOUNDWAVE</div>
   <div class="subtitle">Decepticon Communications Officer // AI Interface v1.0</div>
@@ -590,12 +589,21 @@ Rules:
   <script>
 
     // ═══════════════════════════════════════
+    //  DOM REFS
+    // ═══════════════════════════════════════
+    const chatWindow = document.getElementById('chat-window');
+    const userInput  = document.getElementById('user-input');
+    const btnSend    = document.getElementById('btn-send');
+    const btnSaveCfg = document.getElementById('btn-save-config');
+    const panelToggle = document.getElementById('panel-toggle');
+    const panelBody   = document.getElementById('panel-body');
+
+    // ═══════════════════════════════════════
     //  CONFIG
     // ═══════════════════════════════════════
 
     const CONFIG = {
-      anthropicKey: '',   // TODO: load from input field / localStorage
-      elKey:        '',   // TODO: ElevenLabs API key
+      anthropicKey: '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',   // TODO: ElevenLabs API key
       elVoiceId:    '',   // TODO: ElevenLabs voice ID
       systemPrompt: ``,   // TODO: Write Soundwave's personality prompt here
     };
@@ -618,9 +626,34 @@ Rules:
     //  CHAT UI
     // ═══════════════════════════════════════
 
-    function appendMessage(role, text) {
-      // TODO: Create a message bubble and append it to #chat-window
+    function appendMessage(role, text, isThinking = false) {
       // role is 'user' or 'soundwave'
+      
+      // Create th eouter wrapper div
+      const wrap = document.createElement('div');
+      wrap.className = 'message ' + role + (isThinking ? ' thinking' : '');
+
+      // Create the small label above the bubble (OPERATOR or SOUNDWAVE)
+      const label = document.createElement('div');
+      label.className = 'message-label';
+      label.textContent = role === 'user' ? 'OPERATOR' : 'SOUNDWAVE';
+
+      // Create the actual message bubble
+      const bubble = document.createElement('div');
+      bubble.className = 'message-bubble';
+      if (!isThinking) bubble.textContent = text;
+
+      // Build and insert into the chat window
+      wrap.appendChild(label);
+      wrap.appendChild(bubble);
+      chatWindow.appendChild(wrap);
+
+      //Auto scroll to latest msg
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+
+      //return the elements so callClaude() can update the bubble later
+      return { wrap, bubble };
+
     }
 
     function clearChat() {
@@ -633,12 +666,94 @@ Rules:
     // ═══════════════════════════════════════
 
     async function callClaude(userText) {
-      // TODO: Push userText to state.conversationHistory as role:'user'
-      // TODO: POST to https://api.anthropic.com/v1/messages
-      //       with model, max_tokens, system prompt, and full history
-      // TODO: Handle the streaming response — append tokens to a bubble in real time
-      // TODO: Push final reply to state.conversationHistory as role:'assistant'
-      // TODO: Return the full reply text, or null on error
+      // --STEP 1: Guard clause--
+      // if there is no API key then bail out
+      // state.anthropicKey gets set when the user saves config
+      if (!state.anthropicKey) {
+        appendMessage('soundwave', 'ERROR: No API key. Open config and save your key.');
+        return null; //return null so sendmessage() knows it failed
+      }
+
+      // --STEP 2: Add user to msg history--
+      // Claude has no memory. Every call sends the full convo
+      // We keep that convo in state.conversationHistory.
+      // Each entry is just {role, content} which is the format claude wants
+      state.conversationHistory.push({
+        role: 'user',
+        content: userText
+      });
+
+      // --STEP 3: Show loading bubble in the UI--
+      // appendMessage returns the DOM elements so we can update them later.
+      // Pass true as the third argument to show a thinking stage
+      const { wrap: thinkWrap, bubble: thinkBubble } = appendMessage('soundwave', '', true);
+
+      // --STEP 4: call API--
+      try {
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': state.anthropicKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+          },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 512,
+
+            // The system prompt is Soundwave's personality.
+            // It's separate from the conversation history.
+            system: state.systemPrompt,
+
+            // This is the full conversation so far — Claude reads
+            // all of it every single call to understand context.
+            messages: state.conversationHistory
+          })
+      });
+
+      // --STEP 5: check for http errors--
+      // response.ok is false if the server returns 4xx or 5xx.
+      // we parse the error body to get a readable msg.
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error?.message || 'API error');
+      }
+
+      // --STEP 6: Parse the response--
+      // without streaming, the full reply arrives at once.
+      //the text lives at data.content[0].text
+      const data = await response.json();
+      const replyText = data.content[0].text;
+
+      // --STEP 7: Update the loading bubble--
+      // Replace the thinking state with a actual reply
+      thinkWrap.classList.remove('thinking');
+      thinkBubble.textContent = replyText;
+
+      // --STEP 8: Add claudes reply to history--
+      // this is important for the next time a msg is sent
+      // claude will see its own previous reply in the history too
+      // thats how multi-turn convo works.
+      state.conversationHistory.push({
+        role: 'assistant',
+        content: replyText
+      });
+
+      // --STEP 9: return the text--
+      // sendMessage() recieves this and passes it to speakText() later.
+      return replyText;
+
+      } catch (err){
+        // --STEP 10: handle the errors--
+        // if something went wrong show error in chat
+        // also remove the user message we pushed in step 2,
+        // otherwise the history gets out of sync
+        thinkWrap.classList.remove('thinking');
+        thinkBubble.textContent = 'TRANSMISSION FAILED: ' + err.message;
+        state.conversationHistory.pop()
+        return null;
+      }
     }
 
 
@@ -692,10 +807,25 @@ Rules:
     // ═══════════════════════════════════════
 
     async function sendMessage() {
-      // TODO: Read text from #user-input, bail if empty or already loading
-      // TODO: appendMessage('user', text)
-      // TODO: Call callClaude(text) — await the reply
-      // TODO: If ttsEnabled, call speakText(reply)
+      const text = userInput.value.trim();
+
+      //Bail if empty or already waiting for a reply
+      if (!text || state.isLoading) return;
+
+      //lock the UI so the user cant spam send
+      state.isLoading = true;
+      btnSend.disabled = true;
+
+      // Show the user's msg in the chat
+      appendMessage('user', text);
+      userInput.value = '';
+
+      //Call claude and wait for the reply
+      const reply = await callClaude(text);
+
+      //Unlock the UI
+      state.isLoading = false;
+      btnSend.disabled = false;
     }
 
 
@@ -704,26 +834,72 @@ Rules:
     // ═══════════════════════════════════════
 
     function saveConfig() {
-      // TODO: Read values from config input fields
-      // TODO: Save to localStorage so keys persist between sessions
-    }
+      // Read the values from the input fields in the config panel
+      state.anthropicKey = document.getElementById('cfg-anthropic-key').value.trim();
+      state.elKey        = document.getElementById('cfg-el-key').value.trim();
+      state.elVoiceId    = document.getElementById('cfg-el-voice').value.trim();
+      state.systemPrompt = document.getElementById('cfg-system').value.trim();
 
-    function loadConfig() {
-      // TODO: Read from localStorage and populate CONFIG + input fields
-    }
+      // Save to localStorage as a JSON string
+      // This means the keys survive page refresh
+      localStorage.setItem('sw_config', JSON.stringify({
+        anthropicKey: state.anthropicKey,
+        elKey:        state.elKey,
+        elVoiceId:    state.elVoiceId,
+        systemPrompt: state.systemPrompt,
+      }));
 
+      // Confirm it worked in the chat
+      appendMessage('soundwave', 'Configuration saved. Soundwave: ready.');
+}
+
+  function loadConfig() {
+    // localStorage only stores strings, so we parse the JSON back into an object
+    // If nothing is saved yet, default to an empty object {}
+    const saved = JSON.parse(localStorage.getItem('sw_config') || '{}');
+
+    // Populate state with saved values, fallback to empty string if not found
+    state.anthropicKey = saved.anthropicKey || '';
+    state.elKey        = saved.elKey        || '';
+    state.elVoiceId    = saved.elVoiceId    || '';
+    state.systemPrompt = saved.systemPrompt || '';
+
+    // Also fill in the visible input fields so the user can see what's saved
+    document.getElementById('cfg-anthropic-key').value = state.anthropicKey;
+    document.getElementById('cfg-el-key').value        = state.elKey;
+    document.getElementById('cfg-el-voice').value      = state.elVoiceId;
+
+    // Only override the system prompt textarea if something was saved
+    // Otherwise leave the default prompt that's already written in the HTML
+    if (saved.systemPrompt) {
+      document.getElementById('cfg-system').value = state.systemPrompt;
+    }
+  }
 
     // ═══════════════════════════════════════
     //  EVENT LISTENERS
     // ═══════════════════════════════════════
 
-    // TODO: btn-send click → sendMessage()
-    // TODO: user-input keydown Enter (no shift) → sendMessage()
+    // Send on button click
+    btnSend.addEventListener('click', sendMessage);
+
+    // Send on Enter key (Shift+Enter = new line)
+    userInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
     // TODO: btn-mic click → toggleMic()
     // TODO: TTS toggle button → flip state.ttsEnabled
     // TODO: Clear button → clearChat()
     // TODO: Volume slider input → update state.volume
-    // TODO: Save config button → saveConfig()
+    
+    panelToggle.addEventListener('click', () => {
+      panelBody.classList.toggle('open');
+    });
+    btnSaveCfg.addEventListener('click', saveConfig);
 
 
     // ═══════════════════════════════════════
